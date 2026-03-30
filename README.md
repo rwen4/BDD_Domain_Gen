@@ -7,3 +7,5 @@ Now, a very limited number of labeled samples from a new dataset, D_{K+1} are pr
 How can we make effective use of the data from the past while adapting to the distribution shift at data-set K+1?
 
 ## Method: Kalman Filter
+![intro_graph](https://github.com/user-attachments/assets/ff1d88c3-1bef-4d3b-8eb1-15029d1f88b3)
+
