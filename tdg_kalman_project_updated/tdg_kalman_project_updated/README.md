@@ -113,11 +113,3 @@ scipy
 pykalman
 torch
 ```
-
-## Reproducibility notes
-
-- Do not copy or commit `venv/` or `.venv/` folders.
-- Do not commit raw MIMIC-IV data.
-- Generated CSV datasets should be treated as derived data and may be large.
-- The dataset creation script reduces diagnosis-label leakage by excluding CAD-defining diagnosis codes from diagnosis features, but procedure features may still be clinically close to CAD and should be discussed as a limitation.
-- Very high AUROC/AUPRC values should be interpreted carefully and checked for remaining leakage.
