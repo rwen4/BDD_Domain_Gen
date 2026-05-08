@@ -36,13 +36,14 @@ The dataset consists of:
 
 Drift evolves according to:
 
-\[
+$$
 \theta(t)=2\pi\left(f_0 t+\frac{(f_1-f_0)t^2}{2(T-1)}\right)+\epsilon
-\]
+$$
 
 where:
-- \(f_0\), \(f_1\) define chirp acceleration
-- \(\epsilon\) is Gaussian domain noise
+
+- $f_0$ and $f_1$ define chirp acceleration.
+- $\epsilon$ is Gaussian domain noise.
 
 ---
 
