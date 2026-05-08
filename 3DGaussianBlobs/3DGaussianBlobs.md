@@ -73,11 +73,11 @@ Upper-bound baseline trained directly on the immediately preceding domain.
 
 Each classifier is evaluated on a fixed 3D anchor grid:
 
-- Grid size: \(6 \times 6 \times 6\)
+- Grid size: $6 \times 6 \times 6$
 - Total anchors: 216
 
 For each anchor:
-- model outputs \(P(y=1|x)\)
+- model outputs $P(y=1 \mid x)$
 
 The resulting vector becomes the observation for Kalman filtering.
 
