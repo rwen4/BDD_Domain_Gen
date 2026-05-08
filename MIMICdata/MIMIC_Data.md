@@ -115,14 +115,14 @@ python mimic_iv_Version2.py /path/to/mimiciv/ --force
 
 This is done using a domain discriminator:
 
-\[
+$$
 D(X) \rightarrow T
-\]
+$$
 
 where:
-- \(X\) = patient features
-- \(T\) = temporal domain
-
+- $X$ = patient features
+- $T$ = temporal domain
+  
 If the discriminator predicts domains substantially above random chance, temporal drift is confirmed.
 
 ---
