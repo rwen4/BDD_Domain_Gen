@@ -13,6 +13,8 @@ PROCEDURES_PATH = BASE_DIR / "procedures_icd.csv.gz"
 
 LABEL_NAME = "cad_label"
 
+
+# Return True if a single ICD code represents CAD. For bulk ops use cad_code_mask().
 def is_cad_code(icd_code, icd_version):
     if pd.isna(icd_code):
         return False
@@ -28,6 +30,7 @@ def is_cad_code(icd_code, icd_version):
     return False
 
 
+# Vectorised boolean mask for CAD codes; used for labelling and leakage removal.
 def cad_code_mask(df, code_col="icd_code", version_col="icd_version"):
     code = df[code_col].astype(str).str.strip().str.upper()
     version = df[version_col]
@@ -38,7 +41,7 @@ def cad_code_mask(df, code_col="icd_code", version_col="icd_version"):
     return mask_10 | mask_9
 
 
-
+# Each group maps a feature name to ICD-9 and ICD-10 prefixes; produces a binary flag per admission
 DX_GROUPS = {
     "dx_diabetes": {
         9: ("250",),
@@ -86,6 +89,7 @@ PROC_GROUPS = {
 }
 
 
+# Load the four core MIMIC-IV tables, selecting only the columns we need.
 def load_tables():
     patients = pd.read_csv(
         PATIENTS_PATH,
@@ -116,20 +120,24 @@ def load_tables():
     return patients, admissions, diagnoses, procedures
 
 
+# Join admissions with patient demographics and derive age at admission.
 def build_base_admission_cohort(patients, admissions):
     df = admissions.merge(patients, on="subject_id", how="left")
 
     df["admit_year"] = df["admittime"].dt.year
+    # MIMIC-IV stores age relative to anchor_year; shift to actual admission year
     df["age_at_admit"] = df["anchor_age"] + (df["admit_year"] - df["anchor_year"])
 
     df = df.drop_duplicates(subset=["hadm_id"]).copy()
     return df
 
 
+# Label an admission 1 if any diagnosis code is CAD, 0 otherwise.
 def build_cad_label(diagnoses):
     dx = diagnoses.copy()
     dx[LABEL_NAME] = cad_code_mask(dx).astype(int)
 
+    # Max over all codes per admission: any positive code → label = 1
     label_df = (
         dx.groupby("hadm_id", as_index=False)[LABEL_NAME]
         .max()
@@ -137,6 +145,7 @@ def build_cad_label(diagnoses):
     return label_df
 
 
+# Return 1 if code starts with any prefix defined for its ICD version, else 0.
 def match_prefix(code, version, prefix_map):
     if pd.isna(code):
         return 0
@@ -145,6 +154,7 @@ def match_prefix(code, version, prefix_map):
     return int(any(code.startswith(p) for p in prefixes))
 
 
+# Create one binary flag per clinical group (DX_GROUPS or PROC_GROUPS) per admission.
 def build_group_flags(df_codes, groups):
     out = df_codes[["hadm_id"]].drop_duplicates().copy()
 
@@ -164,6 +174,7 @@ def build_group_flags(df_codes, groups):
     return out
 
 
+# One-hot encode categorical demographic/admission columns; NaNs become 'UNKNOWN'.
 def one_hot_encode_base_features(df):
     df = df.copy()
 
@@ -187,19 +198,21 @@ def one_hot_encode_base_features(df):
     out = pd.get_dummies(
         df[keep_raw_cols + categorical_cols],
         columns=categorical_cols,
-        drop_first=False
+        drop_first=False  # retain all levels; no reference category dropped
     )
 
     return out
 
 
-
+# Pivot the top-k most frequent ICD codes into binary admission-level features.
+# exclude_cad strips CAD codes before computing frequencies to prevent leakage.
 def build_top_code_features(df_codes, top_k=100, feature_prefix="code", exclude_cad=False):
     temp = df_codes.copy()
 
     if exclude_cad:
         temp = temp.loc[~cad_code_mask(temp)].copy()
 
+    # Combine version + code into one key, e.g. "10_I25", to avoid collisions across ICD versions
     temp["code_str"] = temp["icd_version"].astype(str) + "_" + temp["icd_code"].astype(str)
 
     top_codes = temp["code_str"].value_counts().head(top_k).index.tolist()
@@ -228,24 +241,29 @@ def build_top_code_features(df_codes, top_k=100, feature_prefix="code", exclude_
     return wide
 
 
+# Drop CAD codes from the diagnoses table so they cannot appear as input features.
 def remove_cad_diagnoses_from_features(diagnoses):
     return diagnoses.loc[~cad_code_mask(diagnoses)].copy()
 
 
+# Build three feature-set variants for temporal domain-generalisation experiments.
+# Dataset A: demographics + non-CAD diagnoses
+# Dataset B: demographics + non-CAD diagnoses + procedures
+# Dataset C: demographics + procedures only
+# CAD codes are excluded from all feature tables to prevent leakage but are
+# used in full to construct the binary label.
 def build_all_three_datasets():
     patients, admissions, diagnoses, procedures = load_tables()
 
-    # Base cohort
     base = build_base_admission_cohort(patients, admissions)
     base_encoded = one_hot_encode_base_features(base)
 
-    # Label is built from ALL diagnoses, including CAD codes
+    # Label uses the full diagnoses table; CAD codes are removed only from features below
     label_df = build_cad_label(diagnoses)
 
     master = base_encoded.merge(label_df, on="hadm_id", how="left")
     master[LABEL_NAME] = master[LABEL_NAME].fillna(0).astype(int)
 
-    # Diagnosis FEATURES exclude CAD-defining codes
     diagnoses_nocad = remove_cad_diagnoses_from_features(diagnoses)
 
     dx_group_flags = build_group_flags(diagnoses_nocad, DX_GROUPS)
@@ -253,10 +271,9 @@ def build_all_three_datasets():
         diagnoses_nocad,
         top_k=100,
         feature_prefix="dxcode",
-        exclude_cad=False
+        exclude_cad=False  # CAD already removed; no second filter needed
     )
 
-    # Procedure features stay as procedures
     proc_group_flags = build_group_flags(procedures, PROC_GROUPS)
     proc_top_codes = build_top_code_features(
         procedures,
@@ -265,14 +282,12 @@ def build_all_three_datasets():
         exclude_cad=False
     )
 
-    # Dataset A: demographics + non-CAD diagnoses
     dataset_a = (
         master
         .merge(dx_group_flags, on="hadm_id", how="left")
         .merge(dx_top_codes, on="hadm_id", how="left")
     )
 
-    # Dataset B: demographics + non-CAD diagnoses + procedures
     dataset_b = (
         master
         .merge(dx_group_flags, on="hadm_id", how="left")
@@ -281,7 +296,6 @@ def build_all_three_datasets():
         .merge(proc_top_codes, on="hadm_id", how="left")
     )
 
-    # Dataset C: demographics + procedures only
     dataset_c = (
         master
         .merge(proc_group_flags, on="hadm_id", how="left")
@@ -293,6 +307,7 @@ def build_all_three_datasets():
         "anchor_year", "anchor_year_group", LABEL_NAME
     }
 
+    # Fill NaNs introduced by left-merges; binary features default to 0 (absent)
     for df in [dataset_a, dataset_b, dataset_c]:
         for c in df.columns:
             if c in protected_cols:

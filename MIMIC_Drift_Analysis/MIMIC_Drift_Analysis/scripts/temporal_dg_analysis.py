@@ -35,25 +35,16 @@ def load_dataset(path):
     return df
 
 
+# Normalise anchor_year_group strings to a consistent "YYYY-YYYY" format.
 def normalize_anchor_year_group(series):
-    """
-    Converts strings like:
-      '2008 - 2010', '2008-2010'
-    into canonical '2008-2010'
-    """
     s = series.astype(str).str.strip()
     s = s.str.replace(r"\s*-\s*", "-", regex=True)
     return s
 
 
+# Return (time_mode, blocks, df): prefers anchor_year_group; falls back to anchor_year.
+# time_mode is 'group' or 'year'; blocks is an ordered list of block labels.
 def get_time_blocks(df):
-    """
-    Prefer anchor_year_group. If unavailable, use anchor_year as fallback.
-    Returns:
-      time_mode: 'group' or 'year'
-      blocks: ordered list of block labels or year tuples
-      df: dataframe with cleaned time columns
-    """
     df = df.copy()
 
     if "anchor_year_group" in df.columns:
@@ -69,12 +60,13 @@ def get_time_blocks(df):
         blocks = sorted(valid, key=block_key)
         return "group", blocks, df
 
-    # fallback
+    # Fallback: use individual years as blocks
     years = sorted(df["anchor_year"].dropna().astype(int).unique())
     blocks = years
     return "year", blocks, df
 
 
+# Add a unified "time_block" column based on the time_mode returned by get_time_blocks().
 def add_time_block(df, time_mode, blocks, out_col="time_block"):
     df = df.copy()
 
@@ -86,11 +78,13 @@ def add_time_block(df, time_mode, blocks, out_col="time_block"):
     return df
 
 
+# Return columns to use as model inputs, excluding IDs, label, and time metadata.
 def get_feature_cols(df):
     exclude = set(ID_COLS + [LABEL_COL, "admit_year", "anchor_year", "anchor_year_group", "time_block"])
     return [c for c in df.columns if c not in exclude]
 
 
+# Impute → scale → logistic regression pipeline with balanced class weights.
 def make_model():
     return Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
@@ -103,6 +97,7 @@ def make_model():
     ])
 
 
+# Train on each block, evaluate on every other block; returns a long-form results DataFrame.
 def evaluate_temporal_blocks(df, feature_cols, blocks, time_mode, label_col=LABEL_COL):
     rows = []
     model = make_model()
@@ -113,6 +108,7 @@ def evaluate_temporal_blocks(df, feature_cols, blocks, time_mode, label_col=LABE
         else:
             train_df = df.loc[df["anchor_year"].astype(int) == int(train_block)].copy()
 
+        # Skip blocks with no samples or only one class
         if len(train_df) == 0 or train_df[label_col].nunique() < 2:
             continue
 
@@ -156,6 +152,7 @@ def plot_metric_heatmap(results_df, metric, out_path):
     plt.xticks(range(len(pivot.columns)), pivot.columns, rotation=45, ha="right")
     plt.yticks(range(len(pivot.index)), pivot.index)
 
+    # Annotate each cell with its numeric value
     for i in range(pivot.shape[0]):
         for j in range(pivot.shape[1]):
             val = pivot.iloc[i, j]
@@ -171,6 +168,7 @@ def plot_metric_heatmap(results_df, metric, out_path):
     plt.close()
 
 
+# Train once on the first block, then evaluate on all blocks to measure temporal decay.
 def forward_generalization(df, feature_cols, blocks, time_mode, label_col=LABEL_COL):
     model = make_model()
     train_block = blocks[0]
@@ -236,6 +234,7 @@ def plot_prevalence_by_block(df, out_path, label_col=LABEL_COL):
     return prev
 
 
+# Project features to 2D with PCA and colour points by time block to visualise covariate shift.
 def plot_pca(df, feature_cols, out_path, sample_n=20000):
     tmp = df.dropna(subset=["time_block"]).copy()
     if len(tmp) > sample_n:
@@ -264,6 +263,7 @@ def plot_pca(df, feature_cols, out_path, sample_n=20000):
     plt.close()
 
 
+# Return True if a series contains only 0/1 values (binary feature).
 def is_binary(series):
     vals = pd.Series(series).dropna().unique()
     if len(vals) == 0:
@@ -271,6 +271,8 @@ def is_binary(series):
     return set(np.unique(vals)).issubset({0, 1})
 
 
+# Compare earliest vs latest block per feature.
+# Binary features use absolute prevalence difference; continuous features use KS statistic.
 def compute_drift_scores(df, feature_cols):
     blocks = list(df["time_block"].dropna().unique())
     blocks_sorted = sorted(blocks, key=lambda x: int(str(x).split("-")[0]) if "-" in str(x) else int(x))
@@ -292,6 +294,7 @@ def compute_drift_scores(df, feature_cols):
         else:
             a2 = a.dropna()
             b2 = b.dropna()
+            # Skip KS test if either group is too small to be reliable
             if len(a2) < 20 or len(b2) < 20:
                 score = np.nan
             else:
@@ -322,6 +325,7 @@ def plot_top_drift(drift_df, out_path, top_n=20):
     plt.close()
 
 
+# Compute per-feature missing rates for each time block.
 def block_missingness(df, feature_cols):
     out = (
         df.groupby("time_block")[feature_cols]
@@ -332,6 +336,7 @@ def block_missingness(df, feature_cols):
     return out
 
 
+# Show only the top_n features by missingness variance across blocks.
 def plot_missingness_heatmap(missing_df, out_path, top_n=40):
     variability = missing_df.std(axis=1).sort_values(ascending=False)
     top_feats = variability.head(top_n).index
@@ -350,6 +355,7 @@ def plot_missingness_heatmap(missing_df, out_path, top_n=40):
     plt.close()
 
 
+# Summarise performance drop: mean same-block AUROC vs mean AUROC when training on the first block only.
 def summarize_future_drop(results_df):
     diag_mask = results_df["train_block"] == results_df["test_block"]
     in_domain = results_df.loc[diag_mask, "auroc"].mean()
@@ -368,6 +374,7 @@ def summarize_future_drop(results_df):
     }
 
 
+# Run the full analysis pipeline for a single dataset CSV and write all outputs to out_root/<stem>/.
 def analyze_one_dataset(dataset_path, out_root):
     name = Path(dataset_path).stem
     out_dir = Path(out_root) / name
@@ -419,6 +426,7 @@ def analyze_one_dataset(dataset_path, out_root):
     return summary_df
 
 
+# Compare same-block vs first-train AUROC side by side across all datasets.
 def plot_dataset_comparison(summary_df, out_path):
     plot_df = summary_df.copy()
     plot_df = plot_df.set_index("dataset")[["mean_same_block_auroc", "mean_first_train_across_tests_auroc"]]

@@ -35,6 +35,7 @@ def load_dataset(path):
     return df
 
 
+# Normalise anchor_year_group strings to a consistent "YYYY-YYYY" format.
 def normalize_anchor_year_group(series):
     s = series.astype(str).str.strip()
     s = s.str.replace(r"\s*-\s*", "-", regex=True)
@@ -42,6 +43,8 @@ def normalize_anchor_year_group(series):
     return s
 
 
+# Return the dataframe with a unified "time_block" column and a sorted list of block labels.
+# Prefers anchor_year_group if present; falls back to individual anchor_year values.
 def get_time_blocks(df):
     df = df.copy()
 
@@ -61,6 +64,7 @@ def get_time_blocks(df):
     return df, blocks
 
 
+# Return columns to use as model inputs, excluding IDs, label, and time metadata.
 def get_feature_cols(df):
     exclude = set(ID_COLS + [
         LABEL_COL, "admit_year", "anchor_year", "anchor_year_group", "time_block"
@@ -68,6 +72,7 @@ def get_feature_cols(df):
     return [c for c in df.columns if c not in exclude]
 
 
+# Downcast numeric columns in-place to reduce memory usage.
 def downcast_numeric(df, exclude_cols=None):
     if exclude_cols is None:
         exclude_cols = set()
@@ -84,6 +89,7 @@ def downcast_numeric(df, exclude_cols=None):
     return df
 
 
+# Impute → scale → logistic regression pipeline with balanced class weights.
 def make_model():
     return Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
@@ -96,6 +102,7 @@ def make_model():
     ])
 
 
+# Train on each block, evaluate on every other block; returns a long-form results DataFrame.
 def evaluate_temporal_blocks(df, feature_cols, blocks):
     rows = []
     model = make_model()
@@ -104,6 +111,7 @@ def evaluate_temporal_blocks(df, feature_cols, blocks):
         train_mask = df["time_block"] == train_block
         y_train = df.loc[train_mask, LABEL_COL]
 
+        # Skip blocks with no samples or only one class
         if len(y_train) == 0 or y_train.nunique() < 2:
             continue
 
@@ -138,6 +146,7 @@ def evaluate_temporal_blocks(df, feature_cols, blocks):
     return pd.DataFrame(rows)
 
 
+# Train once on the first block, then evaluate on all blocks to measure temporal decay.
 def forward_generalization(df, feature_cols, blocks):
     model = make_model()
     first_block = blocks[0]
@@ -181,6 +190,7 @@ def plot_metric_heatmap(results_df, metric, out_path):
     plt.xticks(range(len(pivot.columns)), pivot.columns, rotation=45, ha="right")
     plt.yticks(range(len(pivot.index)), pivot.index)
 
+    # Annotate each cell with its numeric value
     for i in range(pivot.shape[0]):
         for j in range(pivot.shape[1]):
             val = pivot.iloc[i, j]
@@ -226,6 +236,7 @@ def plot_prevalence_by_block(df, out_path):
     return prev
 
 
+# Return True if a series contains only 0/1 values (binary feature).
 def is_binary(series):
     vals = pd.Series(series).dropna().unique()
     if len(vals) == 0:
@@ -233,6 +244,8 @@ def is_binary(series):
     return set(np.unique(vals)).issubset({0, 1})
 
 
+# Compare earliest vs latest block per feature.
+# Binary features use absolute prevalence difference; continuous features use KS statistic.
 def compute_drift_scores(df, feature_cols, sample_n=100000):
     if len(df) > sample_n:
         df_work = df.sample(sample_n, random_state=42)
@@ -261,6 +274,7 @@ def compute_drift_scores(df, feature_cols, sample_n=100000):
         else:
             a2 = a.dropna()
             b2 = b.dropna()
+            # Skip KS test if either group is too small to be reliable
             if len(a2) < 20 or len(b2) < 20:
                 score = np.nan
             else:
@@ -291,6 +305,7 @@ def plot_top_drift(drift_df, out_path, top_n=20):
     plt.close()
 
 
+# Compute per-feature missing rates for each time block.
 def block_missingness(df, feature_cols, sample_n=100000):
     if len(df) > sample_n:
         df_work = df.sample(sample_n, random_state=42)
@@ -306,6 +321,7 @@ def block_missingness(df, feature_cols, sample_n=100000):
     return out
 
 
+# Show only the top_n features by missingness variance across blocks.
 def plot_missingness_heatmap(missing_df, out_path, top_n=40):
     variability = missing_df.std(axis=1).sort_values(ascending=False)
     top_feats = variability.head(top_n).index
@@ -324,6 +340,7 @@ def plot_missingness_heatmap(missing_df, out_path, top_n=40):
     plt.close()
 
 
+# Summarize performance drop: mean same-block AUROC vs mean AUROC when training on the first block only.
 def summarize_future_drop(results_df):
     diag_mask = results_df["train_block"] == results_df["test_block"]
     in_domain = results_df.loc[diag_mask, "auroc"].mean()
